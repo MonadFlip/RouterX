@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Simple Token Swap</title>
+  <title>RouterX</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <!-- Import ethers.js từ CDN -->
   <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
@@ -41,7 +41,20 @@
       border: 1px solid #ccc;
       border-radius: 5px;
     }
-    button {
+    .fraction-btns button {
+      margin-right: 0.5rem;
+      margin-top: 0.5rem;
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: 5px;
+      background-color: #28a745;
+      color: #fff;
+      cursor: pointer;
+    }
+    .fraction-btns button:hover {
+      background-color: #218838;
+    }
+    button.main-btn {
       width: 100%;
       padding: 0.75rem;
       border: none;
@@ -50,8 +63,9 @@
       color: #fff;
       font-size: 1rem;
       cursor: pointer;
+      margin-top: 0.5rem;
     }
-    button:hover {
+    button.main-btn:hover {
       background-color: #0056b3;
     }
     #status {
@@ -68,7 +82,7 @@
 <body>
   <div class="container">
     <h1>Simple Token Swap</h1>
-    <button id="connectWalletBtn">Connect Wallet</button>
+    <button id="connectWalletBtn" class="main-btn">Connect Wallet</button>
     <div id="chainStatus" style="margin-top: 1rem;"></div>
     <div id="balance"></div>
     <div id="swapForm" style="display:none;">
@@ -77,20 +91,27 @@
         <input type="text" id="tokenA" placeholder="0x..." />
       </div>
       <div class="form-group">
+        <label for="amountIn">Amount (Token A):</label>
+        <input type="number" id="amountIn" placeholder="Amount" />
+        <div class="fraction-btns">
+          <button id="maxBtn">Max</button>
+          <button id="quarterBtn">1/4</button>
+          <button id="halfBtn">1/2</button>
+          <button id="threeQuarterBtn">3/4</button>
+        </div>
+      </div>
+      <button id="approveBtn" class="main-btn">Approve Token</button>
+      <div class="form-group">
         <label for="tokenB">Token B Address:</label>
         <input type="text" id="tokenB" placeholder="0x..." />
       </div>
-      <div class="form-group">
-        <label for="amountIn">Amount (Token A):</label>
-        <input type="number" id="amountIn" placeholder="Amount" />
-      </div>
-      <button id="swapBtn">Swap</button>
+      <button id="swapBtn" class="main-btn" disabled>Swap</button>
     </div>
     <div id="status"></div>
   </div>
 
   <script>
-    // Contract details
+    // Contract details for TokenSwap
     const contractAddress = "0xB7Da972f6A20DF9155EF38E268e6d00f1B80A306";
     const contractABI = [
       {
@@ -106,8 +127,14 @@
       }
     ];
 
+    // Minimal ERC20 ABI for approve, balanceOf
+    const erc20ABI = [
+      "function approve(address spender, uint256 amount) external returns (bool)",
+      "function balanceOf(address account) external view returns (uint256)"
+    ];
+
     // Chain parameters for Monad Testnet
-    const targetChainId = '0x279F'; // 10143 in hex (0x279F)
+    const targetChainId = '0x279F'; // 10143 in hex
     const targetChainDecimal = 10143;
     const targetChainParams = {
       chainId: targetChainId,
@@ -121,34 +148,36 @@
       blockExplorerUrls: ["https://testnet.monadexplorer.com"]
     };
 
-    // If needed, you can use Alchemy RPC endpoint:
-    // const alchemyRPC = "https://monad-testnet.g.alchemy.com/v2/0zsOlVE2M_GMbhbboSAIA3DiHNWsvdO5";
-
     let provider;
     let signer;
-    let contract;
+    let tokenSwapContract;
 
     const connectWalletBtn = document.getElementById("connectWalletBtn");
     const swapForm = document.getElementById("swapForm");
+    const approveBtn = document.getElementById("approveBtn");
     const swapBtn = document.getElementById("swapBtn");
     const statusDiv = document.getElementById("status");
     const chainStatusDiv = document.getElementById("chainStatus");
     const balanceDiv = document.getElementById("balance");
 
-    // Function to check and switch chain if necessary
+    // Fraction buttons
+    const maxBtn = document.getElementById("maxBtn");
+    const quarterBtn = document.getElementById("quarterBtn");
+    const halfBtn = document.getElementById("halfBtn");
+    const threeQuarterBtn = document.getElementById("threeQuarterBtn");
+
+    // Check and switch chain if necessary
     async function checkChain() {
       const currentChain = await provider.getNetwork();
       if (currentChain.chainId !== targetChainDecimal) {
         chainStatusDiv.innerText = "Wrong network. Switching to Monad Testnet...";
         try {
-          // Try to switch chain
           await window.ethereum.request({
             method: 'wallet_switchEthereumChain',
             params: [{ chainId: targetChainId }]
           });
           chainStatusDiv.innerText = "Switched to Monad Testnet.";
         } catch (switchError) {
-          // This error code indicates that the chain has not been added to MetaMask.
           if (switchError.code === 4902) {
             try {
               await window.ethereum.request({
@@ -173,7 +202,7 @@
       return true;
     }
 
-    // Function to update user's MON balance (native balance)
+    // Update user's MON balance
     async function updateBalance() {
       try {
         const address = await signer.getAddress();
@@ -197,7 +226,7 @@
             statusDiv.innerText = "Please switch to the required network.";
             return;
           }
-          contract = new ethers.Contract(contractAddress, contractABI, signer);
+          tokenSwapContract = new ethers.Contract(contractAddress, contractABI, signer);
           statusDiv.innerText = "Wallet connected.";
           connectWalletBtn.style.display = "none";
           swapForm.style.display = "block";
@@ -212,6 +241,73 @@
     }
 
     connectWalletBtn.addEventListener("click", connectWallet);
+
+    // Function to fetch tokenA balance for the connected wallet
+    async function fetchTokenBalance(tokenAddress) {
+      try {
+        const tokenContract = new ethers.Contract(tokenAddress, erc20ABI, signer);
+        const address = await signer.getAddress();
+        const balanceBN = await tokenContract.balanceOf(address);
+        // Giả định 18 decimals
+        return ethers.utils.formatUnits(balanceBN, 18);
+      } catch (error) {
+        console.error("Fetch token balance error:", error);
+        return null;
+      }
+    }
+
+    // Set amount input based on fraction of balance
+    async function setFraction(fraction) {
+      const tokenA = document.getElementById("tokenA").value.trim();
+      if (!ethers.utils.isAddress(tokenA)) {
+        statusDiv.innerText = "Invalid token A address for fetching balance.";
+        return;
+      }
+      const balance = await fetchTokenBalance(tokenA);
+      if (balance === null) {
+        statusDiv.innerText = "Unable to fetch token balance.";
+        return;
+      }
+      const fractionAmount = parseFloat(balance) * fraction;
+      // Hiển thị dưới dạng số thập phân
+      document.getElementById("amountIn").value = fractionAmount.toFixed(6);
+    }
+
+    // Fraction button events
+    maxBtn.addEventListener("click", () => setFraction(1));
+    quarterBtn.addEventListener("click", () => setFraction(0.25));
+    halfBtn.addEventListener("click", () => setFraction(0.5));
+    threeQuarterBtn.addEventListener("click", () => setFraction(0.75));
+
+    // Function to approve tokenA for the swap contract
+    async function approveToken() {
+      const tokenA = document.getElementById("tokenA").value.trim();
+      const amountIn = document.getElementById("amountIn").value.trim();
+      if (!ethers.utils.isAddress(tokenA)) {
+        statusDiv.innerText = "Invalid token A address.";
+        return;
+      }
+      if (isNaN(amountIn) || Number(amountIn) <= 0) {
+        statusDiv.innerText = "Invalid amount.";
+        return;
+      }
+      // Assume token has 18 decimals; adjust if needed
+      const amountInBN = ethers.utils.parseUnits(amountIn, 18);
+      statusDiv.innerText = "Approving token, please wait...";
+      try {
+        const tokenContract = new ethers.Contract(tokenA, erc20ABI, signer);
+        const tx = await tokenContract.approve(contractAddress, amountInBN);
+        await tx.wait();
+        statusDiv.innerText = "Token approved.";
+        // Enable swap button after approval
+        swapBtn.disabled = false;
+      } catch (error) {
+        console.error("Approve error:", error);
+        statusDiv.innerText = "Approve failed: " + error.message;
+      }
+    }
+
+    approveBtn.addEventListener("click", approveToken);
 
     // Function to perform token swap
     async function swapTokens() {
@@ -228,13 +324,11 @@
         return;
       }
 
-      // Convert amount to BigNumber (assume 18 decimals)
       const amountInBN = ethers.utils.parseUnits(amountIn, 18);
-
       statusDiv.innerText = "Swapping tokens, please wait...";
 
       try {
-        const tx = await contract.swapTokenAForTokenB(tokenA, tokenB, amountInBN);
+        const tx = await tokenSwapContract.swapTokenAForTokenB(tokenA, tokenB, amountInBN);
         statusDiv.innerText = "Transaction sent. Waiting for confirmation...";
         await tx.wait();
         statusDiv.innerText = "Swap successful!";
