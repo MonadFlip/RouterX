@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Simple Token Swap</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- Import ethers.js từ CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f7f7f7;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .container {
+      max-width: 480px;
+      background-color: #fff;
+      padding: 2rem;
+      margin-top: 3rem;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    h1 {
+      text-align: center;
+    }
+    .form-group {
+      margin-bottom: 1rem;
+    }
+    label {
+      display: block;
+      margin-bottom: 0.5rem;
+    }
+    input[type="text"],
+    input[type="number"] {
+      width: 100%;
+      padding: 0.5rem;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+    }
+    button {
+      width: 100%;
+      padding: 0.75rem;
+      border: none;
+      border-radius: 5px;
+      background-color: #007bff;
+      color: #fff;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #0056b3;
+    }
+    #status {
+      margin-top: 1rem;
+      text-align: center;
+    }
+    #balance {
+      margin-top: 0.5rem;
+      text-align: center;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Simple Token Swap</h1>
+    <button id="connectWalletBtn">Connect Wallet</button>
+    <div id="chainStatus" style="margin-top: 1rem;"></div>
+    <div id="balance"></div>
+    <div id="swapForm" style="display:none;">
+      <div class="form-group">
+        <label for="tokenA">Token A Address:</label>
+        <input type="text" id="tokenA" placeholder="0x..." />
+      </div>
+      <div class="form-group">
+        <label for="tokenB">Token B Address:</label>
+        <input type="text" id="tokenB" placeholder="0x..." />
+      </div>
+      <div class="form-group">
+        <label for="amountIn">Amount (Token A):</label>
+        <input type="number" id="amountIn" placeholder="Amount" />
+      </div>
+      <button id="swapBtn">Swap</button>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <script>
+    // Contract details
+    const contractAddress = "0xB7Da972f6A20DF9155EF38E268e6d00f1B80A306";
+    const contractABI = [
+      {
+        "inputs": [
+          { "internalType": "address", "name": "tokenA", "type": "address" },
+          { "internalType": "address", "name": "tokenB", "type": "address" },
+          { "internalType": "uint256", "name": "amountIn", "type": "uint256" }
+        ],
+        "name": "swapTokenAForTokenB",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+      }
+    ];
+
+    // Chain parameters for Monad Testnet
+    const targetChainId = '0x279F'; // 10143 in hex (0x279F)
+    const targetChainDecimal = 10143;
+    const targetChainParams = {
+      chainId: targetChainId,
+      chainName: "Monad Testnet",
+      nativeCurrency: {
+        name: "MON",
+        symbol: "MON",
+        decimals: 18
+      },
+      rpcUrls: ["https://testnet-rpc.monad.xyz"],
+      blockExplorerUrls: ["https://testnet.monadexplorer.com"]
+    };
+
+    // If needed, you can use Alchemy RPC endpoint:
+    // const alchemyRPC = "https://monad-testnet.g.alchemy.com/v2/0zsOlVE2M_GMbhbboSAIA3DiHNWsvdO5";
+
+    let provider;
+    let signer;
+    let contract;
+
+    const connectWalletBtn = document.getElementById("connectWalletBtn");
+    const swapForm = document.getElementById("swapForm");
+    const swapBtn = document.getElementById("swapBtn");
+    const statusDiv = document.getElementById("status");
+    const chainStatusDiv = document.getElementById("chainStatus");
+    const balanceDiv = document.getElementById("balance");
+
+    // Function to check and switch chain if necessary
+    async function checkChain() {
+      const currentChain = await provider.getNetwork();
+      if (currentChain.chainId !== targetChainDecimal) {
+        chainStatusDiv.innerText = "Wrong network. Switching to Monad Testnet...";
+        try {
+          // Try to switch chain
+          await window.ethereum.request({
+            method: 'wallet_switchEthereumChain',
+            params: [{ chainId: targetChainId }]
+          });
+          chainStatusDiv.innerText = "Switched to Monad Testnet.";
+        } catch (switchError) {
+          // This error code indicates that the chain has not been added to MetaMask.
+          if (switchError.code === 4902) {
+            try {
+              await window.ethereum.request({
+                method: 'wallet_addEthereumChain',
+                params: [targetChainParams]
+              });
+              chainStatusDiv.innerText = "Chain added and switched to Monad Testnet.";
+            } catch (addError) {
+              console.error("Add chain error:", addError);
+              chainStatusDiv.innerText = "Failed to add the required network.";
+              return false;
+            }
+          } else {
+            console.error("Switch chain error:", switchError);
+            chainStatusDiv.innerText = "Failed to switch network.";
+            return false;
+          }
+        }
+      } else {
+        chainStatusDiv.innerText = "Connected to Monad Testnet.";
+      }
+      return true;
+    }
+
+    // Function to update user's MON balance (native balance)
+    async function updateBalance() {
+      try {
+        const address = await signer.getAddress();
+        const balanceBN = await provider.getBalance(address);
+        const balance = ethers.utils.formatUnits(balanceBN, 18);
+        balanceDiv.innerText = `Balance: ${balance} MON`;
+      } catch (err) {
+        console.error("Balance error:", err);
+      }
+    }
+
+    // Connect wallet and check chain
+    async function connectWallet() {
+      if (window.ethereum) {
+        try {
+          await window.ethereum.request({ method: "eth_requestAccounts" });
+          provider = new ethers.providers.Web3Provider(window.ethereum);
+          signer = provider.getSigner();
+          const chainOk = await checkChain();
+          if (!chainOk) {
+            statusDiv.innerText = "Please switch to the required network.";
+            return;
+          }
+          contract = new ethers.Contract(contractAddress, contractABI, signer);
+          statusDiv.innerText = "Wallet connected.";
+          connectWalletBtn.style.display = "none";
+          swapForm.style.display = "block";
+          updateBalance();
+        } catch (error) {
+          console.error("Wallet connection error:", error);
+          statusDiv.innerText = "Error connecting wallet.";
+        }
+      } else {
+        alert("Please install MetaMask!");
+      }
+    }
+
+    connectWalletBtn.addEventListener("click", connectWallet);
+
+    // Function to perform token swap
+    async function swapTokens() {
+      const tokenA = document.getElementById("tokenA").value.trim();
+      const tokenB = document.getElementById("tokenB").value.trim();
+      const amountIn = document.getElementById("amountIn").value.trim();
+
+      if (!ethers.utils.isAddress(tokenA) || !ethers.utils.isAddress(tokenB)) {
+        statusDiv.innerText = "Invalid token address.";
+        return;
+      }
+      if (isNaN(amountIn) || Number(amountIn) <= 0) {
+        statusDiv.innerText = "Invalid amount.";
+        return;
+      }
+
+      // Convert amount to BigNumber (assume 18 decimals)
+      const amountInBN = ethers.utils.parseUnits(amountIn, 18);
+
+      statusDiv.innerText = "Swapping tokens, please wait...";
+
+      try {
+        const tx = await contract.swapTokenAForTokenB(tokenA, tokenB, amountInBN);
+        statusDiv.innerText = "Transaction sent. Waiting for confirmation...";
+        await tx.wait();
+        statusDiv.innerText = "Swap successful!";
+        updateBalance();
+      } catch (error) {
+        console.error("Swap error:", error);
+        statusDiv.innerText = "Swap failed: " + (error.data && error.data.message ? error.data.message : error.message);
+      }
+    }
+
+    swapBtn.addEventListener("click", swapTokens);
+  </script>
+</body>
+</html>
